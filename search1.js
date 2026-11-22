@@ -284,11 +284,20 @@ const song = (plat, name, singer, album, id, interval, img, hash) => {
   };
 };
 
+// 从上游多个候选字段中取第一个合法的总数(0=上游未给, 由调用方按"未知"处理)
+const pickTotal = function () {
+  for (let i = 0; i < arguments.length; i++) {
+    const n = Number(arguments[i]);
+    if (isFinite(n) && n >= 0) return Math.floor(n);
+  }
+  return 0;
+};
+
 // ==================== 酷我（洛雪 kw，无签名） ====================
 
-const searchKw = async (keyword, limit) => {
+const searchKw = async (keyword, limit, page) => {
   const url = "http://search.kuwo.cn/r.s?client=kt&all=" + encodeURIComponent(keyword)
-    + "&pn=0&rn=" + limit
+    + "&pn=" + ((page - 1) * limit) + "&rn=" + limit
     + "&uid=794762570&ver=kwplayer_ar_9.2.2.1&vipver=1&show_copyright_off=1&newver=1"
     + "&ft=music&cluster=0&strategy=2012&encoding=utf8&rformat=json&vermerge=1&mobi=1&issubtitle=1";
   const body = bodyOf(await httpFetch(url, { method: "GET", headers: { "User-Agent": UA } }));
@@ -302,14 +311,14 @@ const searchKw = async (keyword, limit) => {
     if (out.length >= limit) break;
   }
   if (!out.length) throw new Error("酷我未找到相关歌曲");
-  return out;
+  return { list: out, total: pickTotal(body && body.TOTAL, body && body.total) };
 };
 
 // ==================== 酷狗（洛雪 kg，无签名） ====================
 
-const searchKg = async (keyword, limit) => {
+const searchKg = async (keyword, limit, page) => {
   const url = "http://songsearch.kugou.com/song_search_v2?platform=AndroidFilter&iscorrection=1&keyword="
-    + encodeURIComponent(keyword) + "&hifiquality=0&pagesize=" + limit + "&PrivilegeFilter=0&page=1";
+    + encodeURIComponent(keyword) + "&hifiquality=0&pagesize=" + limit + "&PrivilegeFilter=0&page=" + page;
   const body = bodyOf(await httpFetch(url, { method: "GET", headers: { "User-Agent": UA } }));
   if (!body || Number(body.error_code) !== 0) throw new Error("酷狗搜索失败");
   const lists = body.data && Array.isArray(body.data.lists) ? body.data.lists : [];
@@ -329,7 +338,7 @@ const searchKg = async (keyword, limit) => {
     if (out.length >= limit) break;
   }
   if (!out.length) throw new Error("酷狗未找到相关歌曲");
-  return out;
+  return { list: out, total: pickTotal(body.data && body.data.total) };
 };
 
 // ==================== 咪咕（洛雪 mg v3，MD5 签名） ====================
@@ -338,14 +347,14 @@ const MG_DEVICE_ID = "963B7AA0D21511ED807EE5846EC87D20";
 const MG_SIGNATURE_MD5 = "6cdc72a439cef99a3418d2a78aa28c73";
 const MG_SALT = "yyapp2d16148780a1dcc7408e06336b98cfd50";
 
-const searchMg = async (keyword, limit) => {
+const searchMg = async (keyword, limit, page) => {
   const time = String(Date.now());
   const sign = md5(keyword + MG_SIGNATURE_MD5 + MG_SALT + MG_DEVICE_ID + time);
   const sw = "%7B%22song%22%3A1%2C%22album%22%3A0%2C%22singer%22%3A0%2C%22tagSong%22%3A1"
     + "%2C%22mvSong%22%3A0%2C%22bestShow%22%3A1%2C%22songlist%22%3A0%2C%22lyricSong%22%3A0%7D";
   const url = "https://jadeite.migu.cn/music_search/v3/search/searchAll?isCorrect=0&isCopyright=1"
     + "&searchSwitch=" + sw + "&pageSize=" + limit + "&text=" + encodeURIComponent(keyword)
-    + "&pageNo=1&sort=0&sid=USS";
+    + "&pageNo=" + page + "&sort=0&sid=USS";
   const body = bodyOf(await httpFetch(url, {
     method: "GET",
     headers: {
@@ -371,7 +380,7 @@ const searchMg = async (keyword, limit) => {
     });
   });
   if (!out.length) throw new Error("咪咕未找到相关歌曲");
-  return out.slice(0, limit);
+  return { list: out.slice(0, limit), total: pickTotal(body.songResultData && body.songResultData.totalCount) };
 };
 
 // ==================== QQ音乐（洛雪 tx，zzcSign=SHA1+base64） ====================
@@ -394,7 +403,7 @@ const txSearchId = () => {
   return guid.toUpperCase() + pad5(Math.floor(Math.random() * 100000));
 };
 
-const searchTx = async (keyword, limit) => {
+const searchTx = async (keyword, limit, page) => {
   const data = {
     comm: {
       _channelid: "0", _os_version: "6.2.9200-2", ct: "19", cv: "2151",
@@ -407,7 +416,7 @@ const searchTx = async (keyword, limit) => {
       module: "music.search.SearchCgiService",
       method: "DoSearchForQQMusicDesktop",
       param: {
-        grp: 1, num_per_page: limit, page_num: 1, query: keyword,
+        grp: 1, num_per_page: limit, page_num: page, query: keyword,
         remoteplace: "txt.newclient.top", search_type: 0, searchid: txSearchId(),
       },
     },
@@ -433,7 +442,7 @@ const searchTx = async (keyword, limit) => {
       item.mid));
   });
   if (!out.length) throw new Error("QQ音乐未找到相关歌曲");
-  return out.slice(0, limit);
+  return { list: out.slice(0, limit), total: pickTotal(d.meta && d.meta.sum, d.total, d.sum) };
 };
 
 // ==================== 网易云（洛雪 wy：eapi = MD5 + AES-128-ECB） ====================
@@ -449,7 +458,7 @@ const wyEapiForm = (path, obj) => {
   return { params: aes128ecbEncryptHex(data, WY_EAPI_KEY) };
 };
 
-const searchWyEapi = async (keyword, limit) => {
+const searchWyEapi = async (keyword, limit, page) => {
   const path = "/api/search/song/list/page";
   const body = bodyOf(await httpFetch("http://interface.music.163.com/eapi/batch", {
     method: "POST",
@@ -459,7 +468,7 @@ const searchWyEapi = async (keyword, limit) => {
     },
     form: wyEapiForm(path, {
       keyword: keyword, needCorrect: "1", channel: "typing",
-      offset: 0, scene: "normal", total: true, limit: limit,
+      offset: (page - 1) * limit, scene: "normal", total: true, limit: limit,
     }),
   }));
   if (!body || Number(body.code) !== 200) throw new Error("网易云 eapi 搜索失败");
@@ -472,13 +481,16 @@ const searchWyEapi = async (keyword, limit) => {
       (Number(d.dt) || 0) / 1000, d.al && d.al.picUrl, d.id));
   });
   if (!out.length) throw new Error("网易云未找到相关歌曲");
-  return out.slice(0, limit);
+  return {
+    list: out.slice(0, limit),
+    total: pickTotal(body.data && body.data.totalCount, body.data && body.data.resourceCount),
+  };
 };
 
 // eapi 不可用(网络/协议变化)时回退公开搜索接口, 保证 wy 仍可搜
-const searchWyPublic = async (keyword, limit) => {
+const searchWyPublic = async (keyword, limit, page) => {
   const url = "https://music.163.com/api/search/get/web?s=" + encodeURIComponent(keyword)
-    + "&type=1&offset=0&limit=" + limit;
+    + "&type=1&offset=" + ((page - 1) * limit) + "&limit=" + limit;
   const body = bodyOf(await httpFetch(url, {
     method: "GET",
     headers: { "User-Agent": UA, "Referer": "https://music.163.com/" },
@@ -495,14 +507,17 @@ const searchWyPublic = async (keyword, limit) => {
     if (out.length >= limit) break;
   }
   if (!out.length) throw new Error("网易云未找到相关歌曲");
-  return out;
+  return {
+    list: out,
+    total: pickTotal(body.result && body.result.songCount, body.result && body.result.songcount),
+  };
 };
 
-const searchWy = async (keyword, limit) => {
+const searchWy = async (keyword, limit, page) => {
   try {
-    return await searchWyEapi(keyword, limit);
+    return await searchWyEapi(keyword, limit, page);
   } catch (e) {
-    return await searchWyPublic(keyword, limit);
+    return await searchWyPublic(keyword, limit, page);
   }
 };
 
@@ -524,7 +539,13 @@ on(EVENT_NAMES.request, ({ action, source, info }) => {
   const keyword = info && info.keyword ? String(info.keyword).trim() : "";
   if (!keyword) return Promise.reject(new Error("需要搜索关键词"));
   const limit = Math.min(Number(info && info.limit) || 20, 30);
-  return fn(keyword, limit);
+  const page = Math.max(1, Number(info && info.page) || 1);
+  return Promise.resolve(fn(keyword, limit, page)).then((r) => {
+    const list = (r && Array.isArray(r.list)) ? r.list : (Array.isArray(r) ? r : []);
+    const total = (r && !Array.isArray(r)) ? pickTotal(r.total) : 0;
+    const allPage = total > 0 ? Math.ceil(total / limit) : 0;
+    return { list: list.slice(0, limit), total: total, allPage: allPage, limit: limit };
+  });
 });
 
 const sources = {};
