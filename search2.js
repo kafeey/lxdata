@@ -1,6 +1,5 @@
 /*!
  * @name 纯搜索源
- * @version 1.0.0.0
  */
 const { EVENT_NAMES, request, on, send, env, version } = globalThis.lx;
 
@@ -34,14 +33,23 @@ const formatSeconds = (value) => {
 };
 const dec = (v) => String(v == null ? "" : v).replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").trim();
 
+// 从上游多个候选字段中取第一个合法的总数(0=上游未给, 由调用方按"未知"处理)
+const pickTotal = function () {
+  for (let i = 0; i < arguments.length; i++) {
+    const n = Number(arguments[i]);
+    if (isFinite(n) && n >= 0) return Math.floor(n);
+  }
+  return 0;
+};
+
 const parseKuwoLiteral = (text) => {
   let s = String(text || "").trim();
   s = s.replace(/\\'/g, "\u0001").replace(/'/g, '"').replace(/\u0001/g, "'");
   return JSON.parse(s);
 };
 
-const handleSearchKuwo = async (keyword, limit) => {
-  const url = `${KW_SEARCH_API}?all=${encodeURIComponent(keyword)}&ft=music&itemset=web_2013&client=kt&pn=0&rn=${limit}&rformat=json&encoding=utf8`;
+const handleSearchKuwo = async (keyword, limit, page) => {
+  const url = `${KW_SEARCH_API}?all=${encodeURIComponent(keyword)}&ft=music&itemset=web_2013&client=kt&pn=${(page - 1) * limit}&rn=${limit}&rformat=json&encoding=utf8`;
   const response = await httpFetch(url, {
     method: "GET",
     headers: { "User-Agent": "Mozilla/5.0", Referer: "https://www.kuwo.cn/" },
@@ -50,26 +58,29 @@ const handleSearchKuwo = async (keyword, limit) => {
   const body = parseKuwoLiteral(response?.body);
   const list = Array.isArray(body?.abslist) ? body.abslist : [];
   if (!list.length) throw new Error("未找到相关歌曲");
-  return list.slice(0, limit).map((item) => {
-    const musicRid = String(item.MUSICRID || item.MP3RID || "");
-    const numericId = musicRid.replace(/^MUSIC_/, "").replace(/^MP3_/, "");
-    return {
-      name: dec(item.NAME || item.SONGNAME),
-      singer: dec(item.ARTIST || item.AARTIST),
-      albumName: dec(item.ALBUM),
-      id: numericId,
-      songmid: numericId,
-      hash: numericId,
-      source: "kw",
-      interval: formatSeconds(item.DURATION),
-      meta: { kw: { id: numericId, rid: musicRid } },
-    };
-  });
+  return {
+    list: list.slice(0, limit).map((item) => {
+      const musicRid = String(item.MUSICRID || item.MP3RID || "");
+      const numericId = musicRid.replace(/^MUSIC_/, "").replace(/^MP3_/, "");
+      return {
+        name: dec(item.NAME || item.SONGNAME),
+        singer: dec(item.ARTIST || item.AARTIST),
+        albumName: dec(item.ALBUM),
+        id: numericId,
+        songmid: numericId,
+        hash: numericId,
+        source: "kw",
+        interval: formatSeconds(item.DURATION),
+        meta: { kw: { id: numericId, rid: musicRid } },
+      };
+    }),
+    total: pickTotal(body?.TOTAL, body?.total),
+  };
 };
 
-const handleSearchMigu = async (keyword, limit) => {
+const handleSearchMigu = async (keyword, limit, page) => {
   const pageSize = Math.min(Math.max(limit, 1), 30);
-  const url = `${MG_SEARCH_API}?ua=Android_migu&version=5.0.1&text=${encodeURIComponent(keyword)}&pageNo=1&pageSize=${pageSize}&searchSwitch=${encodeURIComponent(MG_SEARCH_SWITCH)}`;
+  const url = `${MG_SEARCH_API}?ua=Android_migu&version=5.0.1&text=${encodeURIComponent(keyword)}&pageNo=${page}&pageSize=${pageSize}&searchSwitch=${encodeURIComponent(MG_SEARCH_SWITCH)}`;
   const response = await httpFetch(url, {
     method: "GET",
     headers: { "User-Agent": MG_MOBILE_UA, Referer: "http://music.migu.cn/" },
@@ -93,23 +104,26 @@ const handleSearchMigu = async (keyword, limit) => {
     if (Array.isArray(s) && s.length) return s.map((x) => x.name).filter(Boolean).join(" / ");
     return String(item?.singer || "");
   };
-  return list.slice(0, limit).map((item) => {
-    const contentId = String(item.contentId || item.id || "");
-    return {
-      name: dec(item.name || item.songName || ""),
-      singer: dec(pickSinger(item)),
-      albumName: dec(item.albums && item.albums[0] ? item.albums[0].name : ""),
-      id: contentId,
-      songmid: contentId,
-      hash: contentId,
-      source: "mg",
-      meta: { picture: pickCover(item), mg: { id: contentId, copyrightId: String(item.copyrightId || "") } },
-    };
-  });
+  return {
+    list: list.slice(0, limit).map((item) => {
+      const contentId = String(item.contentId || item.id || "");
+      return {
+        name: dec(item.name || item.songName || ""),
+        singer: dec(pickSinger(item)),
+        albumName: dec(item.albums && item.albums[0] ? item.albums[0].name : ""),
+        id: contentId,
+        songmid: contentId,
+        hash: contentId,
+        source: "mg",
+        meta: { picture: pickCover(item), mg: { id: contentId, copyrightId: String(item.copyrightId || "") } },
+      };
+    }),
+    total: pickTotal(body?.songResultData?.totalCount, body?.data?.total),
+  };
 };
 
-const handleSearchTencent = async (keyword, limit) => {
-  const url = `${TX_SEARCH_API}?g_tk=1037878909&uin=1804681355&format=json&inCharset=utf-8&outCharset=utf-8&platform=h5&needNewCode=1&catZhida=1&t=0&perpage=${limit}&n=${limit}&w=${encodeURIComponent(keyword)}&p=1`;
+const handleSearchTencent = async (keyword, limit, page) => {
+  const url = `${TX_SEARCH_API}?g_tk=1037878909&uin=1804681355&format=json&inCharset=utf-8&outCharset=utf-8&platform=h5&needNewCode=1&catZhida=1&t=0&perpage=${limit}&n=${limit}&w=${encodeURIComponent(keyword)}&p=${page}`;
   const response = await httpFetch(url, {
     method: "GET", headers: { Referer: TX_REFERER, "User-Agent": "Mozilla/5.0" }, timeout: 8000,
   });
@@ -117,25 +131,28 @@ const handleSearchTencent = async (keyword, limit) => {
   if (Number(body?.code) !== 0) throw new Error(body?.message || "QQ音乐搜索失败");
   const list = body?.data?.song?.list;
   if (!Array.isArray(list) || !list.length) throw new Error("未找到相关歌曲");
-  return list.slice(0, limit).map((item) => {
-    const songmid = String(item.songmid || item.mid || "");
-    const singers = Array.isArray(item.singer) ? item.singer.map((s) => s.name).filter(Boolean) : [];
-    return {
-      name: dec(item.songname || item.name),
-      singer: dec(singers.join(" / ")),
-      albumName: dec(item.albumname),
-      id: songmid,
-      songmid,
-      hash: songmid,
-      source: "tx",
-      interval: formatSeconds(item.interval),
-      meta: { picture: item.albummid ? `https://y.qq.com/music/photo_new/T002R300x300M000${item.albummid}.jpg` : "", tx: { id: songmid, mid: songmid } },
-    };
-  });
+  return {
+    list: list.slice(0, limit).map((item) => {
+      const songmid = String(item.songmid || item.mid || "");
+      const singers = Array.isArray(item.singer) ? item.singer.map((s) => s.name).filter(Boolean) : [];
+      return {
+        name: dec(item.songname || item.name),
+        singer: dec(singers.join(" / ")),
+        albumName: dec(item.albumname),
+        id: songmid,
+        songmid,
+        hash: songmid,
+        source: "tx",
+        interval: formatSeconds(item.interval),
+        meta: { picture: item.albummid ? `https://y.qq.com/music/photo_new/T002R300x300M000${item.albummid}.jpg` : "", tx: { id: songmid, mid: songmid } },
+      };
+    }),
+    total: pickTotal(body?.data?.total),
+  };
 };
 
-const handleSearchQishui = async (keyword, limit) => {
-  const url = `${QS_SEARCH_API}?keyword=${encodeURIComponent(keyword)}&search_type=music&limit=${limit}&real_offset=0&search_source=qishui`;
+const handleSearchQishui = async (keyword, limit, page) => {
+  const url = `${QS_SEARCH_API}?keyword=${encodeURIComponent(keyword)}&search_type=music&limit=${limit}&real_offset=${(page - 1) * limit}&search_source=qishui`;
   const response = await httpFetch(url, {
     method: "GET", headers: { "User-Agent": "Mozilla/5.0" }, timeout: 8000,
   });
@@ -143,24 +160,27 @@ const handleSearchQishui = async (keyword, limit) => {
   if (Number(body?.errno) !== 0) throw new Error(body?.msg || "汽水音乐搜索失败");
   const list = body?.data?.list;
   if (!Array.isArray(list) || !list.length) throw new Error("未找到相关歌曲");
-  return list.slice(0, limit).map((item) => {
-    const itemId = String(item.item_id || "");
-    return {
-      name: dec(item.title),
-      singer: dec(item.author_info?.name),
-      albumName: "",
-      id: itemId,
-      songmid: itemId,
-      hash: itemId,
-      source: "qs",
-      interval: formatSeconds(item.duration),
-      meta: { picture: dec(item.cover_url), qs: { id: itemId } },
-    };
-  });
+  return {
+    list: list.slice(0, limit).map((item) => {
+      const itemId = String(item.item_id || "");
+      return {
+        name: dec(item.title),
+        singer: dec(item.author_info?.name),
+        albumName: "",
+        id: itemId,
+        songmid: itemId,
+        hash: itemId,
+        source: "qs",
+        interval: formatSeconds(item.duration),
+        meta: { picture: dec(item.cover_url), qs: { id: itemId } },
+      };
+    }),
+    total: pickTotal(body?.data?.total, body?.data?.total_count, body?.data?.totalCount),
+  };
 };
 
-const handleSearchKugou = async (keyword, limit) => {
-  const url = `${KG_SEARCH_API}?keyword=${encodeURIComponent(keyword)}&page=1&pagesize=${limit}&showtype=1`;
+const handleSearchKugou = async (keyword, limit, page) => {
+  const url = `${KG_SEARCH_API}?keyword=${encodeURIComponent(keyword)}&page=${page}&pagesize=${limit}&showtype=1`;
   const response = await httpFetch(url, {
     method: "GET", headers: { "User-Agent": "Mozilla/5.0" }, timeout: 8000,
   });
@@ -169,20 +189,23 @@ const handleSearchKugou = async (keyword, limit) => {
   const list = body?.data?.info;
   if (!Array.isArray(list) || !list.length) throw new Error("未找到相关歌曲");
   const coverOf = (item) => String(item?.trans_param?.union_cover || "").replace("{size}", "300");
-  return list.slice(0, limit).map((item) => {
-    const hash = String(item.hash || "");
-    return {
-      name: dec(item.songname || item.songname_original),
-      singer: dec(item.singername),
-      albumName: dec(item.album_name),
-      id: hash,
-      songmid: hash,
-      hash,
-      source: "kg",
-      interval: formatSeconds(item.duration),
-      meta: { picture: dec(coverOf(item)), kg: { id: hash, hash } },
-    };
-  });
+  return {
+    list: list.slice(0, limit).map((item) => {
+      const hash = String(item.hash || "");
+      return {
+        name: dec(item.songname || item.songname_original),
+        singer: dec(item.singername),
+        albumName: dec(item.album_name),
+        id: hash,
+        songmid: hash,
+        hash,
+        source: "kg",
+        interval: formatSeconds(item.duration),
+        meta: { picture: dec(coverOf(item)), kg: { id: hash, hash } },
+      };
+    }),
+    total: pickTotal(body?.data?.total),
+  };
 };
 
 const SEARCH = {
@@ -197,7 +220,13 @@ on(EVENT_NAMES.request, ({ action, source, info }) => {
   const keyword = info && info.keyword ? String(info.keyword).trim() : "";
   if (!keyword) return Promise.reject(new Error("需要搜索关键词"));
   const limit = Math.min(Number(info && info.limit) || 20, 30);
-  return fn(keyword, limit);
+  const page = Math.max(1, Number(info && info.page) || 1);
+  return Promise.resolve(fn(keyword, limit, page)).then((r) => {
+    const list = (r && Array.isArray(r.list)) ? r.list : (Array.isArray(r) ? r : []);
+    const total = (r && !Array.isArray(r)) ? pickTotal(r.total) : 0;
+    const allPage = total > 0 ? Math.ceil(total / limit) : 0;
+    return { list: list.slice(0, limit), total: total, allPage: allPage, limit: limit };
+  });
 });
 
 const sources = {};
